@@ -298,8 +298,9 @@ function renderTeam(t){
     });
     board.appendChild(el);
   });
-  document.getElementById("hint").textContent = LIVE
-    ? (Object.values(t.lanes||{}).flat().some(p=>p.stats)?"":"run with --stats for season averages")
+  document.getElementById("hint").textContent =
+    ESPN_MODE ? "live from ESPN"
+    : LIVE ? (Object.values(t.lanes||{}).flat().some(p=>p.stats)?"":"run with --stats for season averages")
     : "sample data — run build_depth_chart.py to load all 30 teams";
   renderPanel(t);
 }
@@ -308,9 +309,159 @@ function buildSwitcher(){
   const sel=document.getElementById("teamSel");
   const teams=[...DATA.teams].sort((a,b)=>a.name.localeCompare(b.name));
   sel.innerHTML=teams.map(t=>`<option value="${t.id}">${t.name}</option>`).join("");
-  sel.onchange=()=>renderTeam(DATA.teams.find(t=>t.id===sel.value));
+  sel.onchange=()=>selectTeam(sel.value);
   sel.disabled=teams.length<2;
-  const first=teams.find(t=>t.abbr==="OKC")||teams[0]; sel.value=first.id; renderTeam(first);
+  const first=teams.find(t=>t.abbr==="OKC")||teams[0]; sel.value=first.id; selectTeam(first.id);
+}
+
+/* =========================== live depth from ESPN (no pipeline) =========================== */
+let ESPN_MODE=false;
+const S_API="https://site.api.espn.com/apis/site/v2/sports/basketball/nba";
+const COMMON="https://site.api.espn.com/apis/common/v3/sports/basketball/nba";
+/* stable ESPN NBA team ids -- avoids the /teams endpoint, which blocks some clients.
+   color/logo here are just the initial paint; the real ones load with each team. */
+const NBA_TEAMS=[
+  ["1","ATL","Atlanta Hawks","e03a3e"],["2","BOS","Boston Celtics","007a33"],
+  ["3","NO","New Orleans Pelicans","0a2240"],["4","CHI","Chicago Bulls","ce1141"],
+  ["5","CLE","Cleveland Cavaliers","860038"],["6","DAL","Dallas Mavericks","0053bc"],
+  ["7","DEN","Denver Nuggets","0e2240"],["8","DET","Detroit Pistons","c8102e"],
+  ["9","GS","Golden State Warriors","1d428a"],["10","HOU","Houston Rockets","ce1141"],
+  ["11","IND","Indiana Pacers","002d62"],["12","LAC","LA Clippers","1d428a"],
+  ["13","LAL","Los Angeles Lakers","552583"],["14","MIA","Miami Heat","98002e"],
+  ["15","MIL","Milwaukee Bucks","00471b"],["16","MIN","Minnesota Timberwolves","0c2340"],
+  ["17","BKN","Brooklyn Nets","000000"],["18","NY","New York Knicks","006bb6"],
+  ["19","ORL","Orlando Magic","0077c0"],["20","PHI","Philadelphia 76ers","006bb6"],
+  ["21","PHX","Phoenix Suns","1d1160"],["22","POR","Portland Trail Blazers","e03a3e"],
+  ["23","SAC","Sacramento Kings","5a2d81"],["24","SA","San Antonio Spurs","000000"],
+  ["25","OKC","Oklahoma City Thunder","007ac1"],["26","UTAH","Utah Jazz","002b5c"],
+  ["27","WSH","Washington Wizards","002b5c"],["28","TOR","Toronto Raptors","ce1141"],
+  ["29","MEM","Memphis Grizzlies","5d76a9"],["30","CHA","Charlotte Hornets","1d1160"]
+].map(([id,abbr,name,color])=>({id,abbr,name,color,logo:`https://a.espncdn.com/i/teamlogos/nba/500/${abbr.toLowerCase()}.png`}));
+
+/* ESPN blocks some endpoints cross-origin -> try direct, then public relays */
+async function jget(url){
+  try{ const r=await fetch(url,{cache:"no-store"}); if(r.ok) return await r.json(); }catch(e){}
+  const relays=[
+    u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+    u=>"https://corsproxy.io/?url="+encodeURIComponent(u)
+  ];
+  for(const mk of relays){
+    try{ const r=await fetch(mk(url),{cache:"no-store"}); if(r.ok) return await r.json(); }catch(e){}
+  }
+  throw new Error("fetch failed: "+url);
+}
+
+async function selectTeam(id){
+  const t=DATA.teams.find(x=>x.id===id); if(!t)return;
+  if(ESPN_MODE && !t.lanes){
+    document.getElementById("board").innerHTML=`<div class="empty" style="grid-column:1/-1;padding:30px">Loading ${t.name}…</div>`;
+    document.getElementById("panel").innerHTML="";
+    try{ Object.assign(t, await espnDepth(id)); }
+    catch(e){ document.getElementById("board").innerHTML=`<div class="empty" style="grid-column:1/-1;padding:30px">Couldn't load ${t.name} from ESPN.</div>`; return; }
+  }
+  renderTeam(t);
+}
+async function espnTeams(){
+  const d=await fetch(`${S_API}/teams`,{cache:"no-store"}).then(r=>r.json());
+  return d.sports[0].leagues[0].teams.map(x=>({
+    id:x.team.id, abbr:x.team.abbreviation, name:x.team.displayName,
+    color:x.team.color||"1d428a", logo:(x.team.logos&&x.team.logos[0]&&x.team.logos[0].href)||""
+  }));
+}
+function normAge(p){
+  if(p.age!=null && !isNaN(Number(p.age)))return Number(p.age);
+  const dob=p.dateOfBirth||p.dob;
+  if(dob){const d=new Date(dob); if(!isNaN(d)){const n=new Date();let a=n.getFullYear()-d.getFullYear();const m=n.getMonth()-d.getMonth();if(m<0||(m===0&&n.getDate()<d.getDate()))a--;return a;}}
+  return undefined;
+}
+function normRoster(data){
+  const out={};
+  (data.athletes||[]).forEach(a=>{
+    ((a&&a.items)?a.items:[a]).forEach(p=>{
+      const id=String(p.id||""); if(!id)return;
+      out[id]={pos:((p.position||{}).abbreviation||"").toUpperCase(),jersey:p.jersey||"",age:normAge(p),
+        headshot:(p.headshot||{}).href||HEAD(id),name:p.displayName||""};
+    });
+  });
+  return out;
+}
+function resolveLane(pos,byLane){
+  const P=(pos||"").toUpperCase();
+  const hi=(c,def)=>{let b=def,bi=999;for(const l of c){if(l in byLane&&byLane[l]<bi){bi=byLane[l];b=l;}}return b;};
+  if(LANE_ORDER.includes(P))return P;
+  if(P==="G")return hi(["PG","SG"],"SG");
+  if(P==="F")return hi(["SF","PF"],"SF");
+  if(P==="C"||P==="C-F"||P==="FC")return "C";
+  return hi(LANE_ORDER,"SF");
+}
+function assembleLanes(positions,roster){
+  const seen={};
+  Object.entries(positions).forEach(([k,block])=>{
+    const lane=k.toUpperCase(); if(!LANE_ORDER.includes(lane))return;
+    (block.athletes||[]).forEach((ath,idx)=>{
+      const id=String(ath.id);
+      const inj=(ath.injuries&&ath.injuries[0]&&ath.injuries[0].type&&ath.injuries[0].type.description)||"";
+      const rec=seen[id]||(seen[id]={name:ath.displayName||"",injury:"",byLane:{}});
+      rec.byLane[lane]=idx;
+      if(inj&&!rec.injury)rec.injury=inj.replace(/-/g," ").replace(/^\w/,c=>c.toUpperCase());
+    });
+  });
+  Object.keys(roster).forEach(id=>{if(!seen[id])seen[id]={name:roster[id].name,injury:"",byLane:{}};});
+  const lanes={}; LANE_ORDER.forEach(l=>lanes[l]=[]);
+  Object.keys(seen).forEach(id=>{
+    const rec=seen[id], info=roster[id]||{};
+    const lane=resolveLane(info.pos,rec.byLane);
+    const rank=(lane in rec.byLane)?rec.byLane[lane]:900;
+    lanes[lane].push({id,name:rec.name||info.name||"",jersey:info.jersey||"",headshot:info.headshot||HEAD(id),injury:rec.injury||null,_rank:rank});
+  });
+  LANE_ORDER.forEach(l=>{lanes[l].sort((a,b)=>a._rank-b._rank);lanes[l].forEach((p,i)=>{p.role=ROLES[i]||(i+1)+"th";delete p._rank;});});
+  return lanes;
+}
+function ageSummary(roster){
+  const named=Object.values(roster).filter(r=>typeof r.age==="number").map(r=>[r.name,r.age]);
+  if(!named.length)return null;
+  const ages=named.map(x=>x[1]); named.sort((a,b)=>a[1]-b[1]);
+  return {avg:Math.round(ages.reduce((s,a)=>s+a,0)/ages.length*10)/10,
+    buckets:{young:ages.filter(a=>a<=23).length,prime:ages.filter(a=>a>=24&&a<=29).length,vet:ages.filter(a=>a>=30).length},
+    youngest:{name:named[0][0],age:named[0][1]},oldest:{name:named[named.length-1][0],age:named[named.length-1][1]}};
+}
+async function espnSchedule(teamId,year){
+  const parse=d=>{
+    const out=[];
+    for(const ev of (d.events||[])){
+      const comp=(ev.competitions&&ev.competitions[0])||{}, cs=comp.competitors||[];
+      const me=cs.find(c=>String((c.team||{}).id)===String(teamId)), opp=cs.find(c=>c!==me);
+      if(!opp)continue; const ot=opp.team||{};
+      const date=ev.date||comp.date||"";
+      out.push({date,home:(me||{}).homeAway==="home",opp:ot.abbreviation||ot.shortDisplayName||"",
+        oppLogo:(ot.logos&&ot.logos[0]&&ot.logos[0].href)||ot.logo||"",ts:Date.parse(date)});
+    }
+    return out;
+  };
+  const pick=all=>{const cutoff=Date.now()-6*3600*1000;const f=all.filter(g=>g.ts&&g.ts>=cutoff);return (f.length?f:all).slice(0,6);};
+  try{ const r=await fetch(`data/schedule_${teamId}.json`,{cache:"no-store"}); if(r.ok){const all=parse(await r.json()); if(all.length)return pick(all);} }catch(e){}
+  try{
+    let all=parse(await jget(`${S_API}/teams/${teamId}/schedule?season=${year}`));
+    if(!all.length) all=parse(await jget(`${S_API}/teams/${teamId}/schedule`));
+    return pick(all);
+  }catch(e){return [];}
+}
+async function teamData(kind,teamId,liveUrl){
+  try{ const r=await fetch(`data/${kind}_${teamId}.json`,{cache:"no-store"}); if(r.ok) return await r.json(); }catch(e){}
+  return jget(liveUrl);
+}
+async function espnDepth(teamId){
+  const dc=await teamData("depthcharts",teamId,`${S_API}/teams/${teamId}/depthcharts`);
+  let ros={}; try{ ros=await teamData("roster",teamId,`${S_API}/teams/${teamId}/roster`); }catch(e){}
+  const tm=dc.team||{}, season=dc.season||{};
+  const positions=((dc.depthchart||[])[0]||{}).positions||{};
+  const roster=normRoster(ros);
+  const res={standing:tm.standingSummary||"",season:tm.seasonSummary||season.displayName||"",
+    seasonType:season.name||"",asOf:(dc.timestamp||"").slice(0,10),
+    lanes:assembleLanes(positions,roster),panel:{age:ageSummary(roster),schedule:await espnSchedule(teamId,season.year)}};
+  if(tm.color)res.color=tm.color;
+  if(tm.logo)res.logo=tm.logo;
+  return res;
 }
 
 /* =========================== team panel =========================== */
@@ -354,7 +505,7 @@ async function loadScores(dateStr){
   if(!view.innerHTML)view.innerHTML=`<div class="emptyscores">Loading…</div>`;
   let data;
   try{
-    data=await fetch(NBA_API+"/scoreboard"+(dateStr?`?dates=${dateStr}`:""),{cache:"no-store"}).then(r=>r.json());
+    data=await jget(NBA_API+"/scoreboard"+(dateStr?`?dates=${dateStr}`:""));
   }catch(e){
     clearInterval(SB.timer);
     view.innerHTML=`<div class="emptyscores">Couldn't reach ESPN for live scores.<br>This runs fine on your deployed site; opening the file locally can block the request.</div>`;
@@ -407,7 +558,7 @@ async function openBox(eventId){
   scrim.classList.add("on"); modal.classList.add("on"); modal.scrollTop=0;
   modal.innerHTML=`<button class="x" aria-label="Close" onclick="closeBox()">×</button><div class="emptyscores">Loading box score…</div>`;
   let d;
-  try{ d=await fetch(SUMMARY+eventId,{cache:"no-store"}).then(r=>r.json()); }
+  try{ d=await jget(SUMMARY+eventId); }
   catch(e){ modal.innerHTML=`<button class="x" onclick="closeBox()">×</button><div class="emptyscores">Couldn't load the box score.</div>`; return; }
   renderBox(d,eventId);
 }
@@ -435,40 +586,69 @@ function renderBox(d,eventId){
     <div class="chartcap" style="margin-top:14px">A dot marks a starter · box score live from ESPN</div>`;
 }
 
-/* =========================== leaders (baked leaders.json) =========================== */
-const LB={data:null,loaded:false,season:null,cat:null};
-function catsFor(){const s=LB.data&&LB.data.seasons&&LB.data.seasons[LB.season];return (s&&s.categories)||[];}
-function loadLeaders(){
-  const view=document.getElementById("leadersView");
-  view.innerHTML=`<div class="emptyscores">Loading…</div>`;
-  fetch("leaders.json",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject()).then(j=>{
-    LB.data=j; LB.season=(j.seasonList&&j.seasonList[0])||Object.keys(j.seasons||{})[0];
-    const c=catsFor(); LB.cat=c[0]&&c[0].key; renderLeaders();
-  }).catch(()=>{
-    view.innerHTML=`<div class="emptyscores">Leaderboards load from <b>build_leaders.py</b> (writes <code>leaders.json</code>), then rank players by category and season with real averages.</div>`;
-  });
+/* =========================== leaders (live from ESPN byathlete) =========================== */
+const LB={loaded:false,season:2026,cat:"PTS",cache:{}};
+const LB_CATS=[
+  {key:"PTS",label:"Points",sorts:["offensive.avgPoints"]},
+  {key:"REB",label:"Rebounds",sorts:["defensive.avgRebounds","general.avgRebounds","offensive.avgRebounds"]},
+  {key:"AST",label:"Assists",sorts:["offensive.avgAssists"]},
+  {key:"STL",label:"Steals",sorts:["defensive.avgSteals"]},
+  {key:"BLK",label:"Blocks",sorts:["defensive.avgBlocks"]},
+  {key:"3PM",label:"3-Pointers",sorts:["offensive.avgThreePointFieldGoalsMade","offensive.avg3PointFieldGoalsMade","general.avgThreePointFieldGoalsMade"]}
+];
+const LB_SEASONS=[[2026,"2025-26"],[2025,"2024-25"],[2024,"2023-24"]];
+const BYATH="https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/statistics/byathlete";
+
+/* the sorted stat is the one ESPN gives a numeric rank -> read its value, whatever its column */
+function lbExtract(ath){
+  for(const c of (ath.categories||[])){
+    const r=c.ranks||[], v=c.values||[];
+    for(let i=0;i<r.length;i++){ if(r[i]&&r[i]!=="-"&&!isNaN(parseInt(r[i]))) return {rank:parseInt(r[i]),val:v[i]}; }
+  }
+  return null;
 }
-function renderLeaders(){
+async function lbFetch(season,cat){
+  const ck=season+":"+cat.key; if(LB.cache[ck])return LB.cache[ck];
+  const parse=d=>(d.athletes||[]).map(a=>{
+    const e=lbExtract(a); if(!e)return null; const at=a.athlete||a;
+    return {rank:e.rank,val:+e.val,name:at.displayName,
+      team:a.teamShortName||(a.teams&&a.teams[0]&&a.teams[0].abbreviation)||"",
+      img:(at.headshot&&at.headshot.href)||""};
+  }).filter(Boolean).sort((x,y)=>x.rank-y.rank).slice(0,15);
+  let rows=[];
+  for(const key of cat.sorts){
+    try{
+      const d=await jget(`${BYATH}?isqualified=true&limit=50&sort=${key}:desc&season=${season}&seasontype=2`);
+      rows=parse(d); if(rows.length)break;
+    }catch(e){}
+  }
+  LB.cache[ck]=rows; return rows;
+}
+function loadLeaders(){ LB.loaded=true; renderLeaders(); }
+function wireLbControls(){
+  const s=document.getElementById("lbSeason"); if(s)s.onchange=e=>{LB.season=parseInt(e.target.value);renderLeaders();};
+  const p=document.querySelector("#leadersView .pills"); if(p)p.onclick=e=>{const b=e.target.closest("button");if(!b)return;LB.cat=b.dataset.k;renderLeaders();};
+}
+async function renderLeaders(){
   const view=document.getElementById("leadersView");
-  const cats=catsFor(), cat=cats.find(c=>c.key===LB.cat)||cats[0];
-  if(!cat){view.innerHTML=`<div class="emptyscores">No leaderboard data.</div>`;return;}
-  const seasons=(LB.data.seasonList&&LB.data.seasonList.length)?LB.data.seasonList:Object.keys(LB.data.seasons);
-  const top=cat.leaders[0]?cat.leaders[0].val:1;
-  const rows=cat.leaders.map(p=>{
-    const w=Math.max(4,Math.round(p.val/top*100));
-    return `<div class="lbrow ${p.rank===1?"top":""}">
-      <span class="rk">${p.rank}</span>
+  const cat=LB_CATS.find(c=>c.key===LB.cat)||LB_CATS[0];
+  const seasonSel=`<select id="lbSeason" aria-label="Season">${LB_SEASONS.map(([y,l])=>`<option value="${y}" ${y===LB.season?"selected":""}>${l}</option>`).join("")}</select>`;
+  const pills=`<div class="pills">${LB_CATS.map(c=>`<button data-k="${c.key}" class="${c.key===cat.key?"sel":""}">${c.label}</button>`).join("")}</div>`;
+  view.innerHTML=`<div class="lbctl">${seasonSel}${pills}</div><div class="lblist"><div class="emptyscores">Loading…</div></div>`;
+  wireLbControls();
+  let rows;
+  try{ rows=await lbFetch(LB.season,cat); }
+  catch(e){ const l=document.querySelector("#leadersView .lblist"); if(l)l.innerHTML=`<div class="emptyscores">Couldn't load leaders from ESPN.</div>`; return; }
+  const list=document.querySelector("#leadersView .lblist"); if(!list)return;
+  if(!rows.length){ list.innerHTML=`<div class="emptyscores">No leaderboard for this category and season.</div>`; return; }
+  const top=rows[0].val||1;
+  list.innerHTML=rows.map((p,i)=>{
+    const val=Math.round(p.val*10)/10, w=Math.max(4,Math.round((p.val/top)*100));
+    return `<div class="lbrow ${i===0?"top":""}"><span class="rk">${p.rank||i+1}</span>
       <span class="ph"><img src="${p.img}" alt="" loading="lazy" onerror="this.style.opacity=0"></span>
-      <span class="who"><span class="nm">${p.name}</span><span class="tm">${p.team}${p.line?" · "+p.line:""}</span><span class="lbbar"><i style="width:${w}%"></i></span></span>
-      <span class="val">${p.val}${cat.unit}<small>${cat.label}</small></span>
-    </div>`;
+      <span class="who"><span class="nm">${p.name}</span><span class="tm">${p.team}</span><span class="lbbar"><i style="width:${w}%"></i></span></span>
+      <span class="val">${val}<small>${cat.label}</small></span></div>`;
   }).join("");
-  view.innerHTML=`<div class="lbctl">
-      <select id="lbSeason" aria-label="Season">${seasons.map(s=>`<option ${s===LB.season?"selected":""}>${s}</option>`).join("")}</select>
-      <div class="pills">${cats.map(c=>`<button data-k="${c.key}" class="${c.key===cat.key?"sel":""}">${c.label}</button>`).join("")}</div>
-    </div><div class="lblist">${rows}</div>`;
-  document.getElementById("lbSeason").onchange=e=>{LB.season=e.target.value;const c=catsFor();if(!c.find(x=>x.key===LB.cat))LB.cat=c[0]&&c[0].key;renderLeaders();};
-  view.querySelector(".pills").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;LB.cat=b.dataset.k;renderLeaders();});
 }
 
 /* tab switching + esc */
@@ -494,8 +674,27 @@ function openCard(p,code){
   scrim.classList.add("on"); drawer.classList.add("on"); drawer.scrollTop=0;
   renderCard(p,code,null,true);                       // skeleton first
   fetch(`players/${p.id}.json`,{cache:"no-store"})
-    .then(r=>r.ok?r.json():Promise.reject()).then(d=>renderCard(p,code,d,false))
-    .catch(()=>renderCard(p,code,null,false));         // no file -> sample shots
+    .then(r=>r.ok?r.json():Promise.reject())
+    .then(d=>renderCard(p,code,d,false))               // baked player file
+    .catch(()=>espnPlayer(p.id)                        // else live ESPN bio + season
+      .then(d=>renderCard(p,code,d,false))
+      .catch(()=>renderCard(p,code,null,false)));      // else sample only
+}
+async function espnPlayer(id){
+  const out={bio:{},season:{}};
+  try{
+    const a=(await jget(`${COMMON}/athletes/${id}`)).athlete||{};
+    out.bio={ht:a.displayHeight,wt:a.displayWeight,age:a.age,exp:(a.experience||{}).displayValue,college:(a.college||{}).name};
+    Object.keys(out.bio).forEach(k=>{if(!out.bio[k])delete out.bio[k];});
+  }catch(e){}
+  try{
+    const ov=await jget(`${COMMON}/athletes/${id}/overview`);
+    const st=ov.statistics||{}, names=(st.names||[]).map(n=>String(n).toLowerCase()), vals=((st.splits||[])[0]||{}).stats||[];
+    const want={pts:"ppg",reb:"rpg",ast:"apg",stl:"spg",blk:"bpg","fg%":"fgp","3p%":"tpp","ft%":"ftp"};
+    for(const lab in want){const i=names.indexOf(lab);if(i>=0){const v=parseFloat(String(vals[i]).replace("%",""));if(!isNaN(v))out.season[want[lab]]=Math.round(v*10)/10;}}
+  }catch(e){}
+  if(!Object.keys(out.bio).length && !Object.keys(out.season).length) throw 0;
+  return out;
 }
 
 function tile(v,k){return v==null?"":`<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`;}
@@ -626,13 +825,19 @@ function sampleShots(id){
 
 /* =========================== boot =========================== */
 document.getElementById("note").innerHTML =
-  `Reads <code>depth.json</code> (from <b>build_depth_chart.py</b>) for the board, and <code>players/{id}.json</code> `+
-  `(from <b>build_player_detail.py</b>) for each card. Shot locations come from stats.nba.com via the pipeline; `+
-  `with no player file present the card shows a labeled sample distribution so the chart is visible.`;
-fetch("depth.json",{cache:"no-store"})
-  .then(r=>r.ok?r.json():Promise.reject())
-  .then(j=>{if(j&&j.teams&&j.teams.length){DATA=j;LIVE=true;}})
-  .catch(()=>{}).finally(buildSwitcher);
+  `The depth board reads data files under <code>data/</code> when present (created once by <b>fetch.sh</b>), and otherwise tries ESPN live. `+
+  `Scores and leaders are live from ESPN; player shot charts show a sample, since those come from stats.nba.com.`;
+(async()=>{
+  try{
+    const j=await fetch("depth.json",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject());
+    if(j&&j.teams&&j.teams.length){DATA=j;LIVE=true;ESPN_MODE=false;buildSwitcher();return;}
+    throw 0;
+  }catch(e){
+    ESPN_MODE=true;
+    DATA={teams:NBA_TEAMS};
+    buildSwitcher();
+  }
+})();
 </script>
 </body>
 </html>
