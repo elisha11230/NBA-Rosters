@@ -35,14 +35,23 @@
   .legend span{display:inline-flex;align-items:center;gap:7px}
   .swatch{width:20px;height:3px;border-radius:2px;background:var(--team-rail)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--warn)}
-  .board{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+  .board{display:block}
+  .sec-label{font-size:12px;font-weight:700;color:var(--mute);letter-spacing:.02em;margin:0 2px 10px}
+  .starting5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px}
+  .bench{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+  .card.s5{flex-direction:column;align-items:flex-start;gap:0;background:var(--lane);border:1px solid var(--lane-edge);border-radius:14px;padding:14px 12px}
+  .card.s5 .s5pos{font-size:12px;font-weight:800;color:var(--team);letter-spacing:.05em;margin-bottom:12px}
+  .card.s5 .head{width:60px;height:60px;border-color:var(--team-rail);margin-bottom:10px}
+  .card.s5 .name{font-size:15px;font-weight:700;white-space:normal;line-height:1.2}
+  .card.s5 .mono{font-size:20px}
+  .card.bn{background:var(--lane);border:1px solid var(--lane-edge);border-radius:12px;padding:10px}
+  .card.bn .role{color:var(--faint)}
   .lane{background:var(--lane);border:1px solid var(--lane-edge);border-radius:14px;padding:14px 12px 16px;display:flex;flex-direction:column;min-width:0}
   .lane-head{display:flex;align-items:baseline;gap:8px;padding:0 2px 12px;margin-bottom:12px;border-bottom:1px solid var(--lane-edge)}
   .glyph{font-size:34px;font-weight:800;font-style:italic;letter-spacing:-.04em;line-height:1;color:var(--ink)}
   .glyph-full{color:var(--mute);font-size:12px;font-weight:600}
   .empty{color:var(--faint);font-size:12px;padding:6px 2px}
   .card{display:flex;align-items:center;gap:11px;padding:9px 8px;border-radius:10px;position:relative;cursor:pointer;transition:background .15s ease}
-  .card + .card{margin-top:4px}
   .card:hover{background:#1d2531}
   .card:focus-visible{outline:2px solid var(--team-rail);outline-offset:-1px}
   .card.starter{background:linear-gradient(90deg,var(--team-wash),transparent 70%);padding:12px 8px 12px 14px;margin-bottom:6px}
@@ -192,11 +201,8 @@
   .scalebar{display:flex;align-items:center;gap:8px;justify-content:center;margin-top:10px;color:var(--faint);font-size:11px}
   .scalebar i{height:8px;width:120px;border-radius:5px;background:linear-gradient(90deg,var(--cold),var(--mid),var(--warm))}
 
-  @media (max-width:820px){
-    .board{grid-template-columns:repeat(5,minmax(180px,1fr));overflow-x:auto;padding-bottom:8px;scroll-snap-type:x mandatory}
-    .lane{scroll-snap-align:start}
-    header{flex-wrap:wrap}.right{align-items:flex-start;width:100%}
-  }
+  @media (max-width:820px){ header{flex-wrap:wrap}.right{align-items:flex-start;width:100%} }
+  @media (max-width:640px){ .starting5{grid-template-columns:repeat(2,1fr)} }
   .board{animation:rise .4s ease both}
   @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   @media (prefers-reduced-motion:reduce){.board,.drawer{animation:none;transition:none}*{transition:none!important}}
@@ -272,32 +278,20 @@ function renderTeam(t){
   document.getElementById("standing").textContent=t.standing||"";
   document.getElementById("seasonTag").textContent=(t.season||"")+(t.seasonType?" · "+t.seasonType:"");
   document.getElementById("asOf").textContent=t.asOf?("as of "+t.asOf):"";
-  const board=document.getElementById("board"); board.innerHTML="";
+  const board=document.getElementById("board");
   board.style.animation="none"; void board.offsetWidth; board.style.animation="";
-  LANE_ORDER.forEach(code=>{
-    const players=(t.lanes&&t.lanes[code])||[];
-    const el=document.createElement("div"); el.className="lane";
-    el.innerHTML=`<div class="lane-head"><span class="glyph">${code}</span><span class="glyph-full">${LANE_FULL[code]}</span></div>`;
-    if(!players.length)el.insertAdjacentHTML("beforeend",`<div class="empty">No one listed</div>`);
-    players.forEach((p,i)=>{
-      const starter=i===0||p.role==="Starter";
-      const stats=p.stats?`<div class="statline"><b>${p.stats.ppg??"–"}</b> pts · <b>${p.stats.rpg??"–"}</b> reb · <b>${p.stats.apg??"–"}</b> ast</div>`:"";
-      const jersey=p.jersey?`<span class="jersey">#${p.jersey}</span>`:"";
-      const inj=p.injury?`<div class="inj"><span class="dot"></span>${p.injury}</div>`:"";
-      const card=document.createElement("div");
-      card.className="card"+(starter?" starter":""); card.tabIndex=0; card.setAttribute("role","button");
-      card.innerHTML=`
-        <div class="head"><img src="${p.headshot||HEAD(p.id)}" alt="" loading="lazy"
-             onerror="this.style.display='none';this.after(Object.assign(document.createElement('div'),{className:'mono',textContent:'${initials(p.name)}'}))"></div>
-        <div class="meta"><div class="nameline"><span class="name">${p.name}</span>${jersey}</div>
-          <div class="role">${p.role||(i+1)+"th"}</div>${stats}${inj}</div>`;
-      const open=()=>openCard(p,code);
-      card.addEventListener("click",open);
-      card.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open();}});
-      el.appendChild(card);
-    });
-    board.appendChild(el);
-  });
+  const lanes=t.lanes||{};
+  const head=p=>`<div class="head"><img src="${p.headshot||HEAD(p.id)}" alt="" loading="lazy" onerror="this.style.display='none';this.after(Object.assign(document.createElement('div'),{className:'mono',textContent:'${initials(p.name)}'}))"></div>`;
+  const jersey=p=>p.jersey?`<span class="jersey">#${p.jersey}</span>`:"";
+  const inj=p=>p.injury?`<div class="inj"><span class="dot"></span>${p.injury}</div>`:"";
+  const starters=LANE_ORDER.map(code=>{const q=(lanes[code]||[])[0];return q?Object.assign({code},q):null;}).filter(Boolean);
+  const bench=[]; LANE_ORDER.forEach(code=>(lanes[code]||[]).slice(1).forEach(q=>bench.push(Object.assign({code},q))));
+  const s5card=p=>`<div class="card s5" data-id="${p.id}" data-code="${p.code}" role="button" tabindex="0"><span class="s5pos">${p.code}</span>${head(p)}<div class="meta"><div class="nameline"><span class="name">${p.name}</span>${jersey(p)}</div>${inj(p)}</div></div>`;
+  const bncard=p=>`<div class="card bn" data-id="${p.id}" data-code="${p.code}" role="button" tabindex="0">${head(p)}<div class="meta"><div class="nameline"><span class="name">${p.name}</span>${jersey(p)}</div><div class="role">${p.code}</div>${inj(p)}</div></div>`;
+  board.innerHTML=`<div class="sec-label">Starting five</div><div class="starting5">${starters.length?starters.map(s5card).join(""):'<div class="empty">No lineup listed</div>'}</div><div class="sec-label">Bench</div><div class="bench">${bench.length?bench.map(bncard).join(""):'<div class="empty">No bench listed</div>'}</div>`;
+  const openFrom=c=>{const p=(lanes[c.dataset.code]||[]).find(x=>x.id===c.dataset.id);if(p)openCard(p,c.dataset.code);};
+  board.onclick=e=>{const c=e.target.closest(".card[data-id]");if(c)openFrom(c);};
+  board.onkeydown=e=>{if(e.key!=="Enter"&&e.key!==" ")return;const c=e.target.closest(".card[data-id]");if(c){e.preventDefault();openFrom(c);}};
   document.getElementById("hint").textContent = ESPN_MODE ? "live from ESPN" : "";
   renderPanel(t);
 }
