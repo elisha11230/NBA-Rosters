@@ -1,0 +1,6 @@
+# ESPN endpoints (depth chart, roster, bio, season line) use only the Python
+# standard library -- urllib -- so build_depth_chart.py needs nothing installed.
+#
+# The shot-chart step (build_player_detail.py) is the only part with dependencies:
+nba_api>=1.4
+pandas>=2.0
