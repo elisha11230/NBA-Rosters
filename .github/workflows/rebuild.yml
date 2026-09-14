@@ -1,0 +1,37 @@
+# .github/workflows/rebuild.yml
+# Weekly rebuild of the depth board. Mirrors the NFL app's Tuesday cadence.
+#
+# ONLY the depth board is rebuilt on schedule, because it is ESPN-only and runs
+# reliably on GitHub's servers. The shot and leaderboard data come from
+# stats.nba.com (via nba_api), which blocks datacenter IPs, so those are built
+# locally and committed by hand -- see the README. Rebuilding them here would
+# overwrite your good data with empty results.
+name: rebuild
+
+on:
+  schedule:
+    - cron: "0 12 * * 2"      # Tuesdays 12:00 UTC
+  workflow_dispatch: {}         # manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Depth board (ESPN)
+        run: python build_depth_chart.py --stats   # writes depth.json
+
+      - name: Commit refreshed depth board
+        run: |
+          git config user.name  "rebuild-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add depth.json
+          git commit -m "weekly depth rebuild $(date -u +%F)" || echo "no changes"
+          git push
