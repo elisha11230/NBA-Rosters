@@ -298,10 +298,7 @@ function renderTeam(t){
     });
     board.appendChild(el);
   });
-  document.getElementById("hint").textContent =
-    ESPN_MODE ? "live from ESPN"
-    : LIVE ? (Object.values(t.lanes||{}).flat().some(p=>p.stats)?"":"run with --stats for season averages")
-    : "sample data — run build_depth_chart.py to load all 30 teams";
+  document.getElementById("hint").textContent = ESPN_MODE ? "live from ESPN" : "";
   renderPanel(t);
 }
 
@@ -825,8 +822,7 @@ function sampleShots(id){
 
 /* =========================== boot =========================== */
 document.getElementById("note").innerHTML =
-  `The depth board reads data files under <code>data/</code> when present (created once by <b>fetch.sh</b>), and otherwise tries ESPN live. `+
-  `Scores and leaders are live from ESPN; player shot charts show a sample, since those come from stats.nba.com.`;
+  `Depth board built from <code>depth.json</code>. Scores and leaders pull live from ESPN when reachable; player shot charts show a sample distribution.`;
 (async()=>{
   try{
     const j=await fetch("depth.json",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject());
